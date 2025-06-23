@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Crystal Runner - WebXR Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+    }
+    #overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 1;
+    }
+    #start-button {
+      padding: 14px 28px;
+      font-size: 20px;
+      background: linear-gradient(135deg, rgba(72, 118, 255, 0.8), rgba(100, 80, 255, 0.9));
+      color: white;
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 4px 15px rgba(72, 118, 255, 0.5), 0 0 20px rgba(72, 118, 255, 0.3);
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    #start-button:hover {
+      transform: translateY(-3px) scale(1.03);
+      box-shadow: 0 6px 20px rgba(72, 118, 255, 0.6), 0 0 30px rgba(72, 118, 255, 0.4);
+    }
+    #status {
+      margin-top: 15px;
+      font-size: 16px;
+      background: rgba(10, 20, 30, 0.6);
+      color: white;
+      padding: 12px 18px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2), inset 0 0 10px rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    #score-display {
+      position: absolute;
+      top: 80px;
+      left: 20px;
+      z-index: 1;
+      font-size: 28px;
+      font-weight: bold;
+      color: white;
+      background: rgba(10, 20, 30, 0.6);
+      padding: 12px 18px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2), inset 0 0 10px rgba(255,255,255,0.1);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    #countdown {
+      position: absolute;
+      top: 140px;
+      left: 20px;
+      z-index: 1;
+      font-size: 24px;
+      font-weight: bold;
+      color: #ffff00;
+      background: rgba(10, 20, 30, 0.8);
+      padding: 12px 18px;
+      border-radius: 12px;
+      display: none;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+      text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+      border: 2px solid rgba(255, 255, 0, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <button id="start-button">Start Crystal Runner</button>
+    <div id="status"></div>
+  </div>
+  <div id="score-display">Score: 0</div>
+  <div id="countdown"></div>
+  <audio id="death-sound" preload="auto">
+    <source src="dead.mp3" type="audio/mpeg">
+  </audio>
+  
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.150.1/build/three.module.js';
+
+    let camera, scene, renderer;
+    let controller;
+    let player;
+    let gameGroup; // Container for all game objects
+    let obstacles = [];
+    let clock = new THREE.Clock();
+    let isPlaying = false;
+    let playerLane = 1;
+    let lanePositions = [-0.4, 0, 0.4];
+    let lastControllerRotation = new THREE.Euler();
+    let score = 0;
+    let gameSpeed = 1.5;
+    let spawnInterval = 2.5;
+    let lastSpawnTime = 0;
+    let backgroundMusic;
+    let gameStartTime = 0;
+    let learningPeriod = 15;
+    let countdownInterval;
+    
+    // Performance optimizations
+    const MAX_OBSTACLES = 8;
+    const MAX_PARTICLES = 20;
+    const OBSTACLE_POOL = [];
+    const PARTICLE_POOL = [];
+    
+    // Reusable objects to avoid garbage collection
+    const tempVector = new THREE.Vector3();
+    const tempEuler = new THREE.Euler();
+    
+    // Shared materials for better performance
+    let playerMaterial, obstacleMaterial, particleMaterial;
+    
+    const crystalColors = [0x84f7fd, 0x64acff, 0xa864ff, 0x45caff];
+    
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      scene.fog = new THREE.FogExp2(0x002255, 0.05);
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ 
+        antialias: false, // Disable for performance
+        alpha: true, 
+        powerPreference: "high-performance"
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.setClearColor(0x000000, 0);
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      renderer.shadowMap.enabled = false; // Disable shadows for performance
+      document.body.appendChild(renderer.domElement);
+
+      // Create shared materials
+      createSharedMaterials();
+
+      // Preload death sound
+      const deathSound = document.getElementById('death-sound');
+      deathSound.load();
+
+      // Load background music
+      backgroundMusic = new Audio('Gentlelane.mp3');
+      backgroundMusic.loop = true;
+      backgroundMusic.volume = 0.7;
+
+      // Simplified lighting for performance
+      const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+      directionalLight.position.set(1, 1.5, 1);
+      scene.add(directionalLight);
+
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function createSharedMaterials() {
+      playerMaterial = new THREE.MeshBasicMaterial({
+        color: 0x4da6ff,
+        transparent: true,
+        opacity: 0.4
+      });
+
+      obstacleMaterial = new THREE.MeshBasicMaterial({
+        color: crystalColors[0],
+        transparent: true,
+        opacity: 0.8
+      });
+
+      particleMaterial = new THREE.MeshBasicMaterial({
+        color: crystalColors[1],
+        transparent: true,
+        opacity: 0.6
+      });
+    }
+
+    function startARSession() {
+      if (navigator.xr) {
+        navigator.xr.isSessionSupported('immersive-ar').then(supported => {
+          if (supported) {
+            const sessionInit = {
+              requiredFeatures: ['hit-test'],
+              optionalFeatures: ['dom-overlay'],
+              domOverlay: { root: document.body }
+            };
+            navigator.xr.requestSession('immersive-ar', sessionInit).then(onSessionStarted);
+          } else {
+            updateStatus('WebXR AR session is not supported on this device.');
+          }
+        });
+      } else {
+        updateStatus('WebXR is not supported in this browser.');
+      }
+    }
+
+    function updateStatus(message) {
+      const el = document.getElementById('status');
+      el.style.display = 'block';
+      el.textContent = message;
+    }
+
+    function updateScore(newScore) {
+      score = newScore;
+      const el = document.getElementById('score-display');
+      el.style.display = 'block';
+      el.textContent = `Score: ${score}`;
+    }
+
+    function showCountdown(seconds) {
+      const el = document.getElementById('countdown');
+      el.style.display = 'block';
+      el.textContent = `Practice time: ${seconds}s`;
+    }
+
+    function hideCountdown() {
+      document.getElementById('countdown').style.display = 'none';
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function onSessionStarted(session) {
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      document.getElementById('start-button').style.display = 'none';
+      updateStatus('Creating crystal world...');
+      updateScore(0);
+
+      backgroundMusic.play().catch(err => {
+        console.warn('Audio autoplay failed:', err);
+        document.addEventListener('click', () => {
+          backgroundMusic.play();
+        }, { once: true });
+      });
+
+      createGameEnvironment();
+      createPlayer();
+      setupController(session);
+      initializeObjectPools();
+
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+
+      isPlaying = true;
+      gameStartTime = clock.getElapsedTime();
+      
+      let remainingTime = learningPeriod;
+      showCountdown(remainingTime);
+      updateStatus('Practice time! Rotate controller to change lanes!');
+      
+      countdownInterval = setInterval(() => {
+        remainingTime--;
+        if (remainingTime > 0) {
+          showCountdown(remainingTime);
+        } else {
+          hideCountdown();
+          updateStatus('Game started! Avoid the obstacles!');
+          clearInterval(countdownInterval);
+        }
+      }, 1000);
+    }
+
+    function onSessionEnd() {
+      isPlaying = false;
+      updateStatus('Game ended');
+      document.getElementById('start-button').style.display = 'block';
+      document.getElementById('score-display').style.display = 'none';
+      hideCountdown();
+      if (countdownInterval) clearInterval(countdownInterval);
+      
+      backgroundMusic.pause();
+      backgroundMusic.currentTime = 0;
+
+      // Clean up
+      if (gameGroup) {
+        scene.remove(gameGroup);
+        gameGroup = null;
+      }
+      obstacles = [];
+      OBSTACLE_POOL.length = 0;
+      PARTICLE_POOL.length = 0;
+    }
+
+    function createGameEnvironment() {
+      // Create main game group and position it down and to the left
+      gameGroup = new THREE.Group();
+      gameGroup.position.set(-0.3, -0.5, 0); // Move left and down
+      gameGroup.rotation.x = -0.2; // Slight downward angle
+      scene.add(gameGroup);
+
+      // Simplified ground
+      const ground = new THREE.Mesh(
+        new THREE.BoxGeometry(1.5, 0.02, 10),
+        new THREE.MeshBasicMaterial({ color: 0x203a55 })
+      );
+      ground.position.set(0, -0.1, -5);
+      gameGroup.add(ground);
+
+      // Lane markers
+      for (let i = 0; i < 3; i++) {
+        const marker = new THREE.Mesh(
+          new THREE.BoxGeometry(0.03, 0.03, 10),
+          new THREE.MeshBasicMaterial({ color: 0x3a70ff })
+        );
+        marker.position.set((i - 1) * 0.4, -0.08, -5);
+        gameGroup.add(marker);
+      }
+
+      // Simplified environment crystals
+      for (let i = 0; i < 8; i++) {
+        const crystal = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.04, 0),
+          new THREE.MeshBasicMaterial({ 
+            color: crystalColors[Math.floor(Math.random() * crystalColors.length)],
+            transparent: true,
+            opacity: 0.6
+          })
+        );
+        const side = Math.random() > 0.5 ? 1 : -1;
+        crystal.position.set(side * 0.6, -0.05, -2 - i * 0.8);
+        gameGroup.add(crystal);
+      }
+    }
+
+    function createPlayer() {
+      const bubble = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 12, 12), // Reduced segments
+        playerMaterial
+      );
+      
+      player = new THREE.Group();
+      player.add(bubble);
+      player.position.set(lanePositions[playerLane], 0, -1);
+      gameGroup.add(player);
+    }
+
+    function initializeObjectPools() {
+      // Pre-create obstacle objects
+      for (let i = 0; i < MAX_OBSTACLES; i++) {
+        const obstacle = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.15, 0),
+          obstacleMaterial.clone()
+        );
+        obstacle.visible = false;
+        gameGroup.add(obstacle);
+        OBSTACLE_POOL.push(obstacle);
+      }
+
+      // Pre-create particle objects
+      for (let i = 0; i < MAX_PARTICLES; i++) {
+        const particle = new THREE.Mesh(
+          new THREE.SphereGeometry(0.02, 6, 6),
+          particleMaterial.clone()
+        );
+        particle.visible = false;
+        gameGroup.add(particle);
+        PARTICLE_POOL.push(particle);
+      }
+    }
+
+    function setupController(session) {
+      controller = renderer.xr.getController(0);
+      controller.addEventListener('connected', e => 
+        updateStatus(`Controller connected: ${e.data.handedness}. Practice rotating!`)
+      );
+      scene.add(controller);
+      
+      const controllerMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.01, 0.02, 0.1, 8),
+        new THREE.MeshBasicMaterial({ color: 0xff4500 })
+      );
+      controllerMesh.rotation.x = Math.PI / 2;
+      controller.add(controllerMesh);
+    }
+
+    function getPooledObstacle() {
+      return OBSTACLE_POOL.find(o => !o.visible);
+    }
+
+    function getPooledParticle() {
+      return PARTICLE_POOL.find(p => !p.visible);
+    }
+
+    function spawnObstacle() {
+      const obstacle = getPooledObstacle();
+      if (!obstacle) return; // Pool exhausted
+
+      const lane = Math.floor(Math.random() * 3);
+      const color = crystalColors[Math.floor(Math.random() * crystalColors.length)];
+      
+      obstacle.material.color.setHex(color);
+      obstacle.position.set(lanePositions[lane], 0, -10);
+      obstacle.rotation.set(0, 0, 0);
+      obstacle.userData = { lane, speed: gameSpeed };
+      obstacle.visible = true;
+      
+      obstacles.push(obstacle);
+    }
+
+    function playDeathEffect() {
+      const audio = document.getElementById('death-sound');
+      audio.currentTime = 0;
+      audio.play().catch(err => console.warn('Audio play failed:', err));
+    }
+
+    function checkCollisions() {
+      for (let obstacle of obstacles) {
+        if (!obstacle.visible) continue;
+        
+        tempVector.copy(player.position).sub(obstacle.position);
+        if (tempVector.length() < 0.25) {
+          updateStatus('Collision! Game over.');
+          isPlaying = false;
+          playDeathEffect();
+          createExplosionEffect();
+          setTimeout(resetGame, 2000);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function createExplosionEffect() {
+      for (let i = 0; i < 5; i++) {
+        const particle = getPooledParticle();
+        if (!particle) break;
+        
+        particle.position.copy(player.position);
+        particle.userData = {
+          velocity: new THREE.Vector3(
+            (Math.random() - 0.5) * 0.1,
+            (Math.random() - 0.5) * 0.1,
+            (Math.random() - 0.5) * 0.1
+          ),
+          life: 1.0
+        };
+        particle.visible = true;
+      }
+    }
+
+    function resetGame() {
+      updateScore(0);
+      playerLane = 1;
+      gameSpeed = 1.5;
+      isPlaying = true;
+      gameStartTime = clock.getElapsedTime();
+      
+      player.position.set(lanePositions[playerLane], 0, -1);
+      
+      // Hide all obstacles
+      obstacles.forEach(o => o.visible = false);
+      obstacles = [];
+      
+      // Hide all particles
+      PARTICLE_POOL.forEach(p => p.visible = false);
+      
+      let remainingTime = learningPeriod;
+      showCountdown(remainingTime);
+      updateStatus('Practice time! Rotate controller to change lanes!');
+      
+      countdownInterval = setInterval(() => {
+        remainingTime--;
+        if (remainingTime > 0) {
+          showCountdown(remainingTime);
+        } else {
+          hideCountdown();
+          updateStatus('Game restarted! Avoid the obstacles!');
+          clearInterval(countdownInterval);
+        }
+      }, 1000);
+    }
+
+    function handleControllerRotation() {
+      if (!controller || !isPlaying) return;
+      
+      tempEuler.setFromQuaternion(controller.quaternion);
+      const rotationDiff = tempEuler.z - lastControllerRotation.z;
+      
+      if (Math.abs(rotationDiff) > 0.1) {
+        const newLane = rotationDiff > 0 ? 
+          Math.min(playerLane + 1, 2) : 
+          Math.max(playerLane - 1, 0);
+          
+        if (newLane !== playerLane) {
+          playerLane = newLane;
+          updateStatus(`Changed to ${['left', 'center', 'right'][playerLane]} lane`);
+        }
+      }
+      
+      // Smooth lane transition
+      const targetX = lanePositions[playerLane];
+      player.position.x += (targetX - player.position.x) * 0.15;
+      
+      // Simple floating animation
+      const time = clock.getElapsedTime();
+      player.position.y = Math.sin(time * 2) * 0.02;
+      
+      lastControllerRotation.copy(tempEuler);
+    }
+
+    function updateObstacles(deltaTime) {
+      const gameTime = clock.getElapsedTime() - gameStartTime;
+      const canSpawnObstacles = gameTime > learningPeriod;
+      
+      // Update existing obstacles
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obstacle = obstacles[i];
+        if (!obstacle.visible) continue;
+        
+        obstacle.position.z += obstacle.userData.speed * deltaTime;
+        obstacle.rotation.x += deltaTime * 0.5;
+        obstacle.rotation.y += deltaTime * 0.8;
+        
+        if (obstacle.position.z > 0) {
+          obstacle.visible = false;
+          obstacles.splice(i, 1);
+          
+          if (canSpawnObstacles) {
+            updateScore(score + 10);
+            gameSpeed += 0.03; // Slower speed increase
+          }
+        }
+      }
+      
+      // Spawn new obstacles
+      if (canSpawnObstacles && 
+          obstacles.length < MAX_OBSTACLES && 
+          clock.getElapsedTime() - lastSpawnTime > spawnInterval) {
+        spawnObstacle();
+        lastSpawnTime = clock.getElapsedTime();
+        spawnInterval = Math.max(1.2, spawnInterval - 0.03);
+      }
+    }
+
+    function updateParticles(deltaTime) {
+      PARTICLE_POOL.forEach(particle => {
+        if (!particle.visible || !particle.userData) return;
+        
+        particle.position.add(particle.userData.velocity);
+        particle.userData.life -= deltaTime;
+        particle.material.opacity = particle.userData.life * 0.7;
+        
+        if (particle.userData.life <= 0) {
+          particle.visible = false;
+        }
+      });
+    }
+
+    function render(time, frame) {
+      const deltaTime = Math.min(clock.getDelta(), 1/45); // Cap at 45fps minimum
+      
+      if (frame && isPlaying) {
+        handleControllerRotation();
+        updateObstacles(deltaTime);
+        updateParticles(deltaTime);
+        checkCollisions();
+      }
+      
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
